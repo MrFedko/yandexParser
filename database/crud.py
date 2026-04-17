@@ -40,3 +40,9 @@ class Database:
         sent_to_telegram BOOLEAN NOT NULL DEFAULT 0,
         FOREIGN KEY (rest_id) REFERENCES restaurants(id)
     );""")
+
+    def get_restaurant_by_id(self, r_id):
+        return self.execute("SELECT * FROM restaurants WHERE id = ?", (r_id,), fetchone=True)
+
+    def get_all_restaurants(self):
+        return self.execute("SELECT * FROM restaurants", fetchall=True)
