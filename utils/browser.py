@@ -13,6 +13,16 @@ from zoneinfo import ZoneInfo
 from data.dataclasses import Review
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 
+import os
+import random
+
+# Небольшой список User-Agent-ов (можно расширить или подставлять из внешнего источника)
+UA_LIST = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.5790.170 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+]
+
 
 class BrowserManager:
     def __init__(self, path: str):
@@ -25,22 +35,73 @@ class BrowserManager:
         ser = Service(self.path)
         op = webdriver.ChromeOptions()
 
-        # ускорение
-        op.add_argument('--headless=new')
+        # Параметры поведения, управляемые через переменные окружения
+        # Если нужно запустить в headless на сервере, установите HEADLESS=1
+        headless = 1
+        # Если HUMANIZE=1 — применяем набор техник для снижения детектирования как бот
+        humanize = 1
+
+        # Опции, которые делают браузер более похожим на реальный
+        if headless:
+            # оставляем возможность использования новых headless флагов, если нужно
+            op.add_argument('--headless=new')
+
+        # Устанавливаем случайный User-Agent
+        ua = random.choice(UA_LIST)
+        op.add_argument(f'--user-agent={ua}')
+
+        # Размер окна — случайный стандартный размер (чтобы отличаться между запусками)
+        width = random.choice([1200, 1366, 1440, 1600])
+        height = random.choice([700, 768, 900, 1000])
+        op.add_argument(f'--window-size={width},{height}')
+
+        # Отключаем автоматические флаги, которые выдают Selenium
+        op.add_experimental_option('excludeSwitches', ['enable-automation'])
+        op.add_experimental_option('useAutomationExtension', False)
+
+        # Если мы хотим очеловечить — не отключаем изображения и шрифты
+        if not humanize:
+            # ускорение при небезопасном (non-human) режиме — отключаем изображения/шрифты
+            prefs = {
+                "profile.managed_default_content_settings.images": 2,
+                "profile.managed_default_content_settings.fonts": 2,
+            }
+            op.add_experimental_option("prefs", prefs)
+
+        # другие оптимизации, но аккуратно
         op.add_argument('--no-sandbox')
         op.add_argument('--disable-gpu')
         op.add_argument('--disable-extensions')
         op.page_load_strategy = 'eager'
 
-        # отключаем тяжёлое
-        prefs = {
-            "profile.managed_default_content_settings.images": 2,
-            "profile.managed_default_content_settings.fonts": 2,
-        }
-        op.add_experimental_option("prefs", prefs)
-
         self.browser = webdriver.Chrome(service=ser, options=op)
+        # Устанавливаем не слишком маленькую implicit wait
         self.browser.implicitly_wait(10)
+
+        # Применяем небольшой скрипт через CDP до загрузок страниц, чтобы скрыть navigator.webdriver и задать языки/plugins
+        try:
+            # Этот скрипт будет выполняться на каждой новой странице
+            self.browser.execute_cdp_cmd(
+                'Page.addScriptToEvaluateOnNewDocument',
+                {
+                    'source': """
+                    // Отключаем webdriver флаг
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    // Ставим языки
+                    Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']});
+                    // Имитация плагинов
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});
+                    // Имитация разрешений (например, geolocation)
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ? Promise.resolve({ state: 'denied' }) : originalQuery(parameters)
+                    );
+                    """
+                }
+            )
+        except Exception:
+            # если CDP недоступен — продолжаем без него
+            pass
 
     def _wait_dom(self):
         WebDriverWait(self.browser, 15).until(
@@ -52,6 +113,31 @@ class BrowserManager:
         )
 
         sleep(1)  # короткая стабилизация UI
+
+    # ---------------- Human helpers ----------------
+
+    def human_sleep(self, a: float = 0.3, b: float = 1.2):
+        """Небольшая случайная пауза как у человека."""
+        sleep(random.uniform(a, b))
+
+    def human_move_and_click(self, element):
+        """Делаем более естественный клик: небольшие смещения и паузы."""
+        try:
+            chain = ActionChains(self.browser)
+            chain.move_to_element(element)
+            # небольшие колебания курсора
+            for _ in range(random.randint(1, 3)):
+                chain.pause(random.uniform(0.03, 0.15))
+                chain.move_by_offset(random.randint(-3, 3), random.randint(-3, 3))
+            chain.pause(random.uniform(0.05, 0.25))
+            chain.click()
+            chain.perform()
+        except Exception:
+            # fallback на JS click
+            try:
+                self.browser.execute_script("arguments[0].click();", element)
+            except Exception:
+                raise
 
     # ---------------- SORT ----------------
 
@@ -92,11 +178,8 @@ class BrowserManager:
 
         # используем безопасный клик: сначала ActionChains, иначе JS click
         try:
-            ActionChains(self.browser) \
-                .move_to_element(btn) \
-                .pause(0.2) \
-                .click() \
-                .perform()
+            # human-like
+            self.human_move_and_click(btn)
         except Exception:
             try:
                 self.browser.execute_script("arguments[0].click();", btn)
@@ -131,11 +214,8 @@ class BrowserManager:
 
                 # сначала пробуем нормальный клик через ActionChains
                 try:
-                    ActionChains(self.browser) \
-                        .move_to_element(newest) \
-                        .pause(0.2) \
-                        .click() \
-                        .perform()
+                    # human-like
+                    self.human_move_and_click(newest)
                 except Exception:
                     # fallback: JS click (устойчивее к overlay / быстрым изменениям DOM)
                     self.browser.execute_script("arguments[0].click();", newest)
@@ -152,11 +232,11 @@ class BrowserManager:
 
             except StaleElementReferenceException:
                 print(f"Stale element when selecting newest, retry {attempt}/{attempts}")
-                sleep(0.5)
+                self.human_sleep(0.3, 0.7)
                 continue
             except TimeoutException:
                 print(f"Timeout when locating 'По новизне', retry {attempt}/{attempts}")
-                sleep(0.5)
+                self.human_sleep(0.3, 0.7)
                 continue
 
         # если не удалось
@@ -177,6 +257,7 @@ class BrowserManager:
 
         # остальные вкладки
         for r in restaurants[1:]:
+            self.human_sleep(0.2, 0.8)
             self.browser.execute_script("window.open(arguments[0]);", r.link)
 
             # переключаемся на новую вкладку (последнюю)
@@ -209,7 +290,7 @@ class BrowserManager:
                         break
                     except Exception as e:
                         print("retry sort:", str(e).split("\n")[0])
-                        sleep(1)
+                        self.human_sleep(0.8, 1.5)
 
                 if not sorted_ok:
                     print("⚠️ sort not applied, parsing as-is")
@@ -221,7 +302,7 @@ class BrowserManager:
                     lambda d: d.page_source != old_source
                 )
 
-                sleep(1)  # 🔥 React финальная стабилизация
+                self.human_sleep(0.8, 1.5)  # 🔥 React финальная стабилизация
 
                 # 3. теперь парсим
                 reviews = self.browser.find_elements(
