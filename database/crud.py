@@ -1,5 +1,7 @@
 import sqlite3
 
+from data.dataclasses import Review
+
 
 class Database:
     def __init__(self, path):
@@ -46,3 +48,61 @@ class Database:
 
     def get_all_restaurants(self):
         return self.execute("SELECT * FROM restaurants", fetchall=True)
+
+
+    def add_review(self, review: Review):
+        self.execute(
+            """
+            INSERT INTO reviews (
+                rest_id,
+                review_id,
+                date_time,
+                author_name,
+                author_url,
+                rating,
+                text,
+                sent_to_telegram
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                review.rest_id,
+                review.review_id,
+                review.date_time,
+                review.author_name,
+                review.author_url,
+                review.rating,
+                review.text,
+                review.sent_to_telegram
+            )
+        )
+
+    def get_review(self, review: Review):
+        return self.execute("SELECT * FROM reviews WHERE date_time = ? AND author_name = ?",
+                            (review.date_time, review.author_name), fetchone=True)
+
+    def get_all_reviews_not_sent_to_telegram(self):
+        return self.execute(
+            """SELECT rest_id,
+                review_id,
+                date_time,
+                author_name,
+                author_url,
+                rating,
+                text,
+                sent_to_telegram 
+                FROM reviews WHERE sent_to_telegram = 0 ORDER BY date_time ASC""",
+            fetchall=True
+        )
+
+    def review_is_sent_to_telegram(self, review: Review):
+        self.execute(
+            """
+            UPDATE reviews
+            SET sent_to_telegram = 1
+            WHERE author_name = ? AND date_time = ?
+            """,
+            (review.author_name, review.date_time)
+        )
+
+    def get_rest_name_by_id(self, rest_id):
+        return self.execute("SELECT rest_name FROM restaurants WHERE id = ?", (rest_id,), fetchone=True)

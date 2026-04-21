@@ -6,3 +6,4 @@ from dotenv import load_dotenv
 load_dotenv()
 
 data_base = Database(str(os.getenv("DB_PATH")))
+browserManager = BrowserManager(str(os.getenv("DRIVER_PATH")))
