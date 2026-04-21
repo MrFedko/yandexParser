@@ -16,5 +16,12 @@ export HUMANIZE=1
 # export PROXY="http://user:pass@proxyhost:3128"
 # export USER_AGENT="..."
 
+# Найдём доступный интерпретатор Python (предпочитаем python3)
+PYTHON_BIN="$(command -v python3 || command -v python || true)"
+if [ -z "$PYTHON_BIN" ]; then
+  echo "No python interpreter found in PATH. Install python3 or export PATH so systemd can find it." >&2
+  exit 127
+fi
+
 # Запуск через xvfb-run с экраном 1400x900x24. Измените размеры при необходимости.
-exec xvfb-run -s "-screen 0 1400x900x24" python app.py
+exec xvfb-run -s "-screen 0 1400x900x24" "$PYTHON_BIN" app.py
