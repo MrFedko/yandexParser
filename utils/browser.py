@@ -37,18 +37,24 @@ class BrowserManager:
 
         # Параметры поведения, управляемые через переменные окружения
         # Если нужно запустить в headless на сервере, установите HEADLESS=1
-        headless = 1
+        headless = os.getenv("HEADLESS", "1") == "1"
         # Если HUMANIZE=1 — применяем набор техник для снижения детектирования как бот
-        humanize = 1
+        humanize = os.getenv("HUMANIZE", "1") == "1"
 
         # Опции, которые делают браузер более похожим на реальный
         if headless:
             # оставляем возможность использования новых headless флагов, если нужно
             op.add_argument('--headless=new')
 
-        # Устанавливаем случайный User-Agent
-        ua = random.choice(UA_LIST)
+        # Устанавливаем User-Agent: можно задать через USER_AGENT или взять случайный из списка
+        ua = os.getenv("USER_AGENT") or random.choice(UA_LIST)
         op.add_argument(f'--user-agent={ua}')
+
+        # Proxy (опционально) — ожидается формат host:port или schema://host:port
+        proxy = os.getenv("PROXY")
+        if proxy:
+            # Chrome принимает аргумент --proxy-server
+            op.add_argument(f'--proxy-server={proxy}')
 
         # Размер окна — случайный стандартный размер (чтобы отличаться между запусками)
         width = random.choice([1200, 1366, 1440, 1600])
@@ -99,6 +105,18 @@ class BrowserManager:
                     """
                 }
             )
+            # Устанавливаем дополнительные сетевые заголовки через CDP — полезно для очеловечивания
+            try:
+                # Включаем сетевой модуль и добавляем заголовки (Accept-Language и стандартный Referer если нужно)
+                headers = {
+                    'Accept-Language': os.getenv('ACCEPT_LANGUAGE', 'ru-RU,ru;q=0.9'),
+                    # можно добавлять другие заголовки, например 'Referer' или 'User-Agent' при необходимости
+                }
+                self.browser.execute_cdp_cmd('Network.enable', {})
+                self.browser.execute_cdp_cmd('Network.setExtraHTTPHeaders', {'headers': headers})
+            except Exception:
+                # если сетевые CDP вызовы не работают — продолжаем
+                pass
         except Exception:
             # если CDP недоступен — продолжаем без него
             pass
