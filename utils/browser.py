@@ -208,7 +208,7 @@ class BrowserManager:
                         sorted_ok = True
                         break
                     except Exception as e:
-                        print("retry sort:", e)
+                        print("retry sort:", str(e).split("\n")[0])
                         sleep(1)
 
                 if not sorted_ok:

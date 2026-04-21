@@ -37,4 +37,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        # Печатаем только сообщение об ошибке без стэктрейса
+        print(str(e))
+    finally:
+        # Пытаемся корректно закрыть браузер, если он был инициализирован
+        try:
+            browserManager.close()
+        except Exception:
+            pass
