@@ -4,149 +4,115 @@ from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import (
-    StaleElementReferenceException,
-    TimeoutException,
-    WebDriverException
-)
+from bs4 import BeautifulSoup
 from time import sleep
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 class BrowserManager:
-
-    def __init__(self, path: str):
-        self.path = path
+    def __init__(self, driver_path):
+        self.driver_path = driver_path
         self.browser = None
 
-    # ---------------- INIT ----------------
-
-    def _init_browser(self):
-        service = Service(self.path)
+    def init_browser(self):
+        service = Service(self.driver_path)
         options = Options()
 
         options.add_argument("-headless")
 
-        # 🔥 КРИТИЧЕСКИЕ ФИКСЫ ДЛЯ FIREFOX
-        options.set_preference("fission.webContentIsolationStrategy", 0)
-        options.set_preference("browser.tabs.remote.autostart", False)
-
-        # локаль
+        # стабильность
         options.set_preference("intl.accept_languages", "ru-RU,ru")
+        options.set_preference("permissions.default.image", 2)
 
         self.browser = webdriver.Firefox(service=service, options=options)
-        self.browser.implicitly_wait(5)
+        self.browser.implicitly_wait(10)
 
-    # ---------------- UTILS ----------------
-
-    def ensure_alive(self):
-        try:
-            _ = self.browser.title
-        except Exception:
-            raise WebDriverException("Browser context lost")
-
-    def wait_page_loaded(self):
+    def wait_page(self):
         WebDriverWait(self.browser, 15).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
-
-    # ---------------- SORT ----------------
+        sleep(2)
 
     def select_newest(self):
-        """Стабильный выбор 'По новизне'"""
-
-        for attempt in range(3):
-            try:
-                self.ensure_alive()
-
-                # 1. открыть меню
-                sort_btn = WebDriverWait(self.browser, 15).until(
-                    EC.element_to_be_clickable((By.CLASS_NAME, "rating-ranking-view"))
-                )
-
-                self.browser.execute_script(
-                    "arguments[0].scrollIntoView({block:'center'});", sort_btn
-                )
-                sleep(0.5)
-                sort_btn.click()
-
-                # 2. выбрать "По новизне"
-                newest = WebDriverWait(self.browser, 10).until(
-                    EC.element_to_be_clickable((
-                        By.XPATH,
-                        "//div[contains(@class,'rating-ranking-view__popup-line') and contains(., 'По новизне')]"
-                    ))
-                )
-
-                newest.click()
-
-                # 🔥 ВАЖНО: ждём НОВЫЙ DOM, а не page_source
-                WebDriverWait(self.browser, 15).until(
-                    EC.presence_of_all_elements_located(
-                        (By.CLASS_NAME, "business-reviews-card-view__review")
-                    )
-                )
-
-                sleep(1)
-
-                print("✅ По новизне выбрано")
-                return True
-
-            except (StaleElementReferenceException, TimeoutException):
-                print(f"retry sort {attempt+1}")
-                sleep(1)
-
-            except WebDriverException as e:
-                print("context lost:", e)
-                return False
-
-        return False
-
-    # ---------------- PARSE ----------------
-
-    def parse_reviews(self):
-        """Простой стабильный парсинг"""
-
         try:
-            self.ensure_alive()
-
-            reviews = self.browser.find_elements(
-                By.CLASS_NAME,
-                "business-reviews-card-view__review"
+            btn = WebDriverWait(self.browser, 10).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "rating-ranking-view"))
             )
 
-            result = []
+            self.browser.execute_script("arguments[0].click();", btn)
 
-            for r in reviews:
-                try:
-                    text = r.text
-                    result.append(text)
-                except StaleElementReferenceException:
-                    continue
+            newest = WebDriverWait(self.browser, 10).until(
+                EC.element_to_be_clickable((
+                    By.CSS_SELECTOR,
+                    "div.rating-ranking-view__popup-line[aria-label='По новизне']"
+                ))
+            )
 
-            return result
+            self.browser.execute_script("arguments[0].click();", newest)
+            sleep(2)
 
-        except WebDriverException:
-            print("Browser died while parsing")
-            return []
+            print("✅ Сортировка по новизне")
+        except Exception as e:
+            print("⚠️ Не удалось выбрать сортировку:", e)
 
-    # ---------------- RUN ----------------
+    def parse_page(self, url):
+        self.browser.get(url)
+        self.wait_page()
 
-    def run(self, url: str):
-        self._init_browser()
+        self.select_newest()
 
-        try:
-            self.browser.get(url)
-            self.wait_page_loaded()
+        html = self.browser.page_source
+        soup = BeautifulSoup(html, "html.parser")
 
-            print("Opened:", url)
+        reviews = soup.find_all(
+            "div", {"class": "business-reviews-card-view__review"}
+        )
 
-            if not self.select_newest():
-                print("⚠️ не удалось применить сортировку")
+        result = []
 
-            data = self.parse_reviews()
+        for r in reviews:
+            try:
+                author = r.find(itemprop="author")
+                name = author.find(itemprop="name").text if author else None
 
-            print(f"Найдено отзывов: {len(data)}")
-            return data
+                rating = r.find(itemprop="ratingValue")
+                rating = rating["content"] if rating else None
 
-        finally:
-            self.browser.quit()
+                date = r.find(itemprop="datePublished")
+                if date:
+                    dt = datetime.fromisoformat(date["content"].replace("Z", "+00:00"))
+                    dt = dt.astimezone(ZoneInfo("Europe/Moscow"))
+                    date = dt.strftime("%Y-%m-%d %H:%M:%S")
+
+                text = r.find(itemprop="reviewBody")
+                text = text.text.strip() if text else None
+
+                result.append({
+                    "author": name,
+                    "rating": rating,
+                    "date": date,
+                    "text": text
+                })
+
+            except Exception as e:
+                print("Ошибка парсинга:", e)
+
+        return result
+
+    def run(self, restaurants):
+        self.init_browser()
+
+        all_reviews = []
+
+        for r in restaurants:
+            print(f"Processing: {r['name']}")
+
+            try:
+                data = self.parse_page(r["link"])
+                all_reviews.extend(data)
+            except Exception as e:
+                print("Ошибка:", e)
+
+        self.browser.quit()
+        return all_reviews
