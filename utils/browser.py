@@ -30,11 +30,11 @@ class BrowserManager:
         op = Options()
 
         # headless режим
-        # try:
-        #     # prefer explicit headless flag
-        #     op.add_argument('-headless')
-        # except Exception:
-        #     op.headless = True
+        try:
+            # prefer explicit headless flag
+            op.add_argument('-headless')
+        except Exception:
+            op.headless = True
 
         # стратегия загрузки страниц
         try:
