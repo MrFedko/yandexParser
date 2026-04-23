@@ -16,6 +16,7 @@ from selenium.common.exceptions import StaleElementReferenceException, TimeoutEx
 
 class BrowserManager:
     def __init__(self, path: str):
+        self.tab_map = None
         self.path = path
         self.browser = None
 
@@ -132,7 +133,7 @@ class BrowserManager:
         selector = "div.rating-ranking-view__popup-line[aria-label='По новизне']"
 
         # пытаемся надёжно кликнуть по пункту 'По новизне' с повторными попытками
-        attempts = 3
+        attempts = 4
         for attempt in range(1, attempts + 1):
             try:
                 newest = WebDriverWait(self.browser, 10).until(
@@ -187,48 +188,24 @@ class BrowserManager:
 
         self.tab_map = {}
         # очередь оставшихся ресторанов (объекты SimpleNamespace / dataclass с полем .link)
-        self._queue = []
-
         if not restaurants:
             return
 
         # открываем первую
         first = restaurants[0]
         self.browser.get(first.link)
-        try:
-            self._inject_map_blocker()
-        except Exception:
-            pass
-        try:
-            self._enforce_russian_language()
-        except Exception:
-            pass
         self._wait_dom()
         self.tab_map[self.browser.current_window_handle] = first
 
         # открываем вторую, если есть
-        if len(restaurants) > 1:
-            second = restaurants[1]
-            self.browser.execute_script("window.open(arguments[0]);", second.link)
+        for i, restaurant in enumerate(restaurants[1:]):
+            self.browser.execute_script("window.open(arguments[0]);", restaurant.link)
             new_handle = self.browser.window_handles[-1]
             self.browser.switch_to.window(new_handle)
-            try:
-                self._inject_map_blocker()
-            except Exception:
-                pass
-            try:
-                self._enforce_russian_language()
-            except Exception:
-                pass
             self._wait_dom()
-            self.tab_map[new_handle] = second
-
-        # остаток в очередь
-        if len(restaurants) > 2:
-            self._queue = restaurants[2:]
+            self.tab_map[new_handle] = restaurant
 
     # ---------------- PARSE ----------------
-
     def parse_all_tabs(self, restaurants=None):
         """Динамически обрабатывает открытые вкладки.
         После парсинга вкладка закрывается и при наличии очереди открывается следующая.
@@ -366,14 +343,6 @@ class BrowserManager:
                     # переключаемся и применяем блокировщик/локаль
                     try:
                         self.browser.switch_to.window(new_handle)
-                        try:
-                            self._inject_map_blocker()
-                        except Exception:
-                            pass
-                        try:
-                            self._enforce_russian_language()
-                        except Exception:
-                            pass
                         self._wait_dom()
                     except Exception as e:
                         print("Error opening next tab:", e)
