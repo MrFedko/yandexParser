@@ -79,15 +79,15 @@ class BrowserManager:
         op.add_argument('--disable-gpu')
         op.add_argument('--disable-extensions')
 
-        op.add_argument("--single-process")
-        op.add_argument("--disable-extensions")
-        op.add_argument("--disable-background-networking")
-        op.add_argument("--disable-sync")
-        op.add_argument("--metrics-recording-only")
-        op.add_argument("--mute-audio")
-        op.add_argument("--no-first-run")
-        op.add_argument("--disable-default-apps")
-        op.add_argument("--renderer-process-limit=2")
+        # op.add_argument("--single-process")
+        # op.add_argument("--disable-extensions")
+        # op.add_argument("--disable-background-networking")
+        # op.add_argument("--disable-sync")
+        # op.add_argument("--metrics-recording-only")
+        # op.add_argument("--mute-audio")
+        # op.add_argument("--no-first-run")
+        # op.add_argument("--disable-default-apps")
+        # op.add_argument("--renderer-process-limit=2")
 
         op.page_load_strategy = 'eager'
 
