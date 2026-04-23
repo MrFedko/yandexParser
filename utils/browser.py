@@ -45,6 +45,14 @@ class BrowserManager:
         # 2 = block images
         op.set_preference("permissions.default.image", 2)
 
+        # обязательно установить русскую локаль/языки для Accept-Language и поведения страницы
+        try:
+            op.set_preference("intl.accept_languages", "ru-RU,ru")
+            op.set_preference("intl.locale.requested", "ru-RU")
+            op.set_preference("general.useragent.locale", "ru-RU")
+        except Exception:
+            pass
+
         # создаём Firefox драйвер
         self.browser = webdriver.Firefox(service=ser, options=op)
         self.browser.implicitly_wait(10)
@@ -137,6 +145,27 @@ class BrowserManager:
             self.browser.execute_script(js)
         except Exception as e:
             print("Map blocker injection failed:", e)
+
+    def _enforce_russian_language(self):
+        """Инъекция JS, которая принудительно ставит русскую локаль на странице:
+        - navigator.language / navigator.languages
+        - атрибут html.lang
+        Это дополняет настройки Firefox и помогает страницам правильно определять язык.
+        """
+        js = r"""
+        (function(){
+          try{
+            Object.defineProperty(navigator, 'language', {get: function(){ return 'ru-RU'; }, configurable: true});
+            Object.defineProperty(navigator, 'languages', {get: function(){ return ['ru-RU','ru']; }, configurable: true});
+          }catch(e){}
+          try{ document.documentElement.lang = 'ru'; }catch(e){}
+          try{ var h = document.querySelector('html'); if(h) h.setAttribute('lang','ru'); }catch(e){}
+        })();
+        """
+        try:
+            self.browser.execute_script(js)
+        except Exception as e:
+            print("Language enforcement injection failed:", e)
 
     # ---------------- SORT ----------------
 
@@ -261,6 +290,11 @@ class BrowserManager:
             self._inject_map_blocker()
         except Exception:
             pass
+        # принудительно установим русскую локаль на странице
+        try:
+            self._enforce_russian_language()
+        except Exception:
+            pass
         self._wait_dom()
 
         self.tab_map[self.browser.current_window_handle] = restaurants[0]
@@ -276,6 +310,12 @@ class BrowserManager:
             # снова инъектим блокировщик в каждую новую вкладку
             try:
                 self._inject_map_blocker()
+            except Exception:
+                pass
+
+            # и принудительно ставим русскую локаль в новой вкладке
+            try:
+                self._enforce_russian_language()
             except Exception:
                 pass
 
