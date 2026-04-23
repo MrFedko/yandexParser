@@ -68,101 +68,6 @@ class BrowserManager:
 
         sleep(1)  # короткая стабилизация UI
 
-    def _inject_map_blocker(self):
-        """Более безопасный блокировщик карт: не переопределяет встроленные методы, наблюдает за добавлением узлов
-        через MutationObserver и удаляет только явно распознаваемые элементы карт (iframe/script с map-доменами
-        или элементы с явными индикаторами типа 'ya-map', 'mapbox', 'openstreetmap' и т.п.).
-        Эта реализация минимально инвазивна и не ломает вставку обычных DOM-элементов.
-        """
-        js = r"""
-        (function(){
-          const patterns = ['yandex.ru/maps','api-maps.yandex.ru','static-maps.yandex','maps.yandex','mapbox.com','openstreetmap.org','maps.gstatic.com'];
-          const indicators = ['map','ya-map','yandex-map','ymap','leaflet','openstreet','mapbox','osm','maps__'];
-
-          function matchesUrl(u){ if(!u) return false; try{ return patterns.some(p=> (u||'').indexOf(p)!==-1); }catch(e){return false;} }
-          function matchesIndicator(s){ if(!s) return false; try{ s = (''+s).toLowerCase(); return indicators.some(i=> s.indexOf(i)!==-1); }catch(e){return false;} }
-
-          function isMapNode(node){
-            if(!node) return false;
-            const t = (node.tagName || '').toUpperCase();
-            try{
-              if(t === 'IFRAME' || t === 'SCRIPT'){
-                const src = node.src || (node.getAttribute && node.getAttribute('src')) || '';
-                if(matchesUrl(src)) return true;
-              }
-              // если внутри добавленного контейнера есть iframe/script с src-паттерном
-              if(node.querySelector){
-                const inner = node.querySelector('iframe[src], script[src]');
-                if(inner){
-                  const src = inner.src || (inner.getAttribute && inner.getAttribute('src')) || '';
-                  if(matchesUrl(src)) return true;
-                }
-              }
-              // id/class/data-qa индикаторы
-              const id = node.id || '';
-              const cls = node.className || '';
-              const dataqa = node.getAttribute && node.getAttribute('data-qa') || '';
-              if(matchesIndicator(id) || matchesIndicator(cls) || matchesIndicator(dataqa)){
-                // дополнительная проверка: если внутри есть iframe/script — вероятнее всего это карта
-                try{ if(node.querySelector && node.querySelector('iframe, script')) return true; }catch(e){}
-              }
-            }catch(e){}
-            return false;
-          }
-
-          // удалить уже добавленные потенциальные карты
-          try{
-            const candidates = document.querySelectorAll('iframe, script, div');
-            candidates.forEach(n=>{ try{ if(isMapNode(n)) n.remove(); }catch(e){} });
-          }catch(e){}
-
-          // наблюдатель за добавленными узлами
-          try{
-            const mo = new MutationObserver(function(muts){
-              for(const m of muts){
-                for(const n of m.addedNodes){
-                  try{
-                    if(isMapNode(n)){
-                      n.remove();
-                      continue;
-                    }
-                    // если добавленный узел контейнер — посмотрим внутри
-                    if(n.querySelector){
-                      const inner = n.querySelectorAll && n.querySelectorAll('iframe, script');
-                      if(inner && inner.length){
-                        inner.forEach(el=>{ if(isMapNode(el)) try{ el.remove(); }catch(e){} });
-                      }
-                    }
-                  }catch(e){}
-                }
-              }
-            });
-            mo.observe(document.documentElement || document, { childList: true, subtree: true });
-          }catch(e){}
-        })();
-        """
-        try:
-            self.browser.execute_script(js)
-        except Exception as e:
-            print("Map blocker injection failed:", e)
-
-    def _enforce_russian_language(self):
-        """Инъекция JS, которая принудительно ставит русскую локаль на странице."""
-        js = r"""
-        (function(){
-          try{
-            Object.defineProperty(navigator, 'language', {get: function(){ return 'ru-RU'; }, configurable: true});
-            Object.defineProperty(navigator, 'languages', {get: function(){ return ['ru-RU','ru']; }, configurable: true});
-          }catch(e){}
-          try{ document.documentElement.lang = 'ru'; }catch(e){}
-          try{ var h = document.querySelector('html'); if(h) h.setAttribute('lang','ru'); }catch(e){}
-        })();
-        """
-        try:
-            self.browser.execute_script(js)
-        except Exception as e:
-            print("Language enforcement injection failed:", e)
-
     # ---------------- SORT ----------------
 
     def wait_clickable_js(self, element):
@@ -290,14 +195,6 @@ class BrowserManager:
         # открываем первую
         first = restaurants[0]
         self.browser.get(first.link)
-        try:
-            self._inject_map_blocker()
-        except Exception:
-            pass
-        try:
-            self._enforce_russian_language()
-        except Exception:
-            pass
         self._wait_dom()
         self.tab_map[self.browser.current_window_handle] = first
 
@@ -307,14 +204,6 @@ class BrowserManager:
             self.browser.execute_script("window.open(arguments[0]);", second.link)
             new_handle = self.browser.window_handles[-1]
             self.browser.switch_to.window(new_handle)
-            try:
-                self._inject_map_blocker()
-            except Exception:
-                pass
-            try:
-                self._enforce_russian_language()
-            except Exception:
-                pass
             self._wait_dom()
             self.tab_map[new_handle] = second
 
@@ -461,14 +350,6 @@ class BrowserManager:
                     # переключаемся и применяем блокировщик/локаль
                     try:
                         self.browser.switch_to.window(new_handle)
-                        try:
-                            self._inject_map_blocker()
-                        except Exception:
-                            pass
-                        try:
-                            self._enforce_russian_language()
-                        except Exception:
-                            pass
                         self._wait_dom()
                     except Exception as e:
                         print("Error opening next tab:", e)
