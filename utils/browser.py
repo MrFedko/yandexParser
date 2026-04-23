@@ -1,5 +1,6 @@
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.firefox.service import Service
+from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -24,22 +25,29 @@ class BrowserManager:
 
     def _init_browser(self):
         ser = Service(self.path)
-        op = webdriver.ChromeOptions()
+        # используем Firefox (geckodriver)
+        op = Options()
 
-        # ускорение
-        op.add_argument('--headless=new')
-        op.add_argument('--no-sandbox')
-        op.add_argument('--disable-gpu')
-        op.add_argument('--disable-extensions')
-        op.page_load_strategy = 'eager'
+        # headless режим
+        try:
+            # prefer explicit headless flag
+            op.add_argument('-headless')
+        except Exception:
+            op.headless = True
 
-        prefs = {
-            "profile.managed_default_content_settings.images": 2,
-            "profile.managed_default_content_settings.fonts": 2,
-        }
-        op.add_experimental_option("prefs", prefs)
+        # стратегия загрузки страниц
+        try:
+            op.page_load_strategy = 'eager'
+        except Exception:
+            # некоторые версии selenium могут не поддерживать установку — безопасно игнорируем
+            pass
 
-        self.browser = webdriver.Chrome(service=ser, options=op)
+        # ускорение: отключаем загрузку картинок
+        # 2 = block images
+        op.set_preference("permissions.default.image", 2)
+
+        # создаём Firefox драйвер
+        self.browser = webdriver.Firefox(service=ser, options=op)
         self.browser.implicitly_wait(10)
 
     def _wait_dom(self):
