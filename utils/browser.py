@@ -19,6 +19,8 @@ class BrowserManager:
         self.tab_map = None
         self.path = path
         self.browser = None
+        # очередь на открытие (поддержка open_multiple_tabs)
+        self._queue = []
 
     # ---------------- INIT ----------------
 
@@ -188,25 +190,36 @@ class BrowserManager:
 
     # ---------------- TABS ----------------
 
-    def open_multiple_tabs(self, restaurants):
-        """Открывает не более двух вкладок сразу. Остальные рестораны сохраняются в очередь self._queue.
+    def open_multiple_tabs(self, restaurants, max_tabs: int = 1):
+        """Открывает до `max_tabs` вкладок сразу (по умолчанию 1). Остальные рестораны сохраняются в очередь `self._queue`.
         После вызова этой функции вызовите parse_all_tabs() чтобы последовательно обработать очередь.
+
+        Параметры:
+            restaurants: список объектов (SimpleNamespace / dataclass) с полем .link
+            max_tabs: максимальное число одновременно открытых вкладок (по умолчанию 1)
         """
+
         self._init_browser()
 
         self.tab_map = {}
-        # очередь оставшихся ресторанов (объекты SimpleNamespace / dataclass с полем .link)
+        # reset очередь и заполним её остатком
         if not restaurants:
             return
 
-        # открываем первую
-        first = restaurants[0]
+        # guard: положим копию списка
+        rest_list = list(restaurants)
+        # первые N для открытия
+        to_open = rest_list[:max_tabs]
+        self._queue = rest_list[max_tabs:]
+
+        # открываем первую (и далее — до max_tabs)
+        first = to_open[0]
         self.browser.get(first.link)
         self._wait_dom()
         self.tab_map[self.browser.current_window_handle] = first
 
-        # открываем вторую, если есть
-        for i, restaurant in enumerate(restaurants[1:]):
+        # открываем остальные из to_open
+        for restaurant in to_open[1:]:
             self.browser.execute_script("window.open(arguments[0]);", restaurant.link)
             new_handle = self.browser.window_handles[-1]
             self.browser.switch_to.window(new_handle)
@@ -344,7 +357,7 @@ class BrowserManager:
                     pass
 
                 # Если в очереди есть еще рестораны — открываем следующий (чтобы было максимум 2 вкладки)
-                if getattr(self, '_queue', None) and len(self._queue) > 0:
+                if self._queue:
                     next_rest = self._queue.pop(0)
                     self.browser.execute_script("window.open(arguments[0]);", next_rest.link)
                     new_handle = self.browser.window_handles[-1]
