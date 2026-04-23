@@ -14,7 +14,7 @@ def main():
         return
 
     # Открываем браузер и ставим все рестораны в очередь, открывая по 1 вкладке одновременно
-    browserManager.open_multiple_tabs(restaurants, max_tabs=1)
+    browserManager.open_multiple_tabs(restaurants, max_tabs=2)
     print(f"Opened browser and queued {len(restaurants)} restaurants (max_tabs=1).")
 
     # Парсим все вкладки последовательно (они будут открываться по мере освобождения)
