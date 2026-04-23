@@ -14,6 +14,7 @@ from data.dataclasses import Review
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 
 
+
 class BrowserManager:
     def __init__(self, path: str):
         self.path = path
