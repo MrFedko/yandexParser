@@ -61,72 +61,76 @@ class BrowserManager:
         sleep(1)  # короткая стабилизация UI
 
     def _inject_map_blocker(self):
-        """Инъекция JS, блокирующего загрузку карты/плагина и удаляющего существующие элементы карты."""
+        """Более безопасный блокировщик карт: не переопределяет встроленные методы, наблюдает за добавлением узлов
+        через MutationObserver и удаляет только явно распознаваемые элементы карт (iframe/script с map-доменами
+        или элементы с явными индикаторами типа 'ya-map', 'mapbox', 'openstreetmap' и т.п.).
+        Эта реализация минимально инвазивна и не ломает вставку обычных DOM-элементов.
+        """
         js = r"""
         (function(){
           const patterns = ['yandex.ru/maps','api-maps.yandex.ru','static-maps.yandex','maps.yandex','mapbox.com','openstreetmap.org','maps.gstatic.com'];
-          function matches(u){ if(!u) return false; try{ return patterns.some(p=>u.indexOf(p)!==-1); }catch(e){return false;} }
-  
-          ['appendChild','insertBefore'].forEach(fn=>{
-            const orig = Node.prototype[fn];
-            Node.prototype[fn] = function(node, ref){
-              try{
-                if(node && node.tagName === 'SCRIPT'){
-                  let src = node.src || (node.getAttribute && node.getAttribute('src')) || '';
-                  if(matches(src) || (node.innerHTML && node.innerHTML.indexOf('maps')!==-1)){
-                    return node;
-                  }
-                }
-                if(node && node.tagName === 'IFRAME'){
-                  let src = node.src || (node.getAttribute && node.getAttribute('src')) || '';
-                  if(matches(src)){
-                    return node;
-                  }
-                }
-              }catch(e){}
-              return orig.call(this, node, ref);
-            };
-          });
-  
-          const origCreate = Document.prototype.createElement;
-          Document.prototype.createElement = function(tag){
-            const el = origCreate.call(this, tag);
+          const indicators = ['map','ya-map','yandex-map','ymap','leaflet','openstreet','mapbox','osm','maps__'];
+
+          function matchesUrl(u){ if(!u) return false; try{ return patterns.some(p=> (u||'').indexOf(p)!==-1); }catch(e){return false;} }
+          function matchesIndicator(s){ if(!s) return false; try{ s = (''+s).toLowerCase(); return indicators.some(i=> s.indexOf(i)!==-1); }catch(e){return false;} }
+
+          function isMapNode(node){
+            if(!node) return false;
+            const t = (node.tagName || '').toUpperCase();
             try{
-              if(tag.toLowerCase()==='script' || tag.toLowerCase()==='iframe'){
-                const desc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'src');
-                const setter = desc && desc.set;
-                Object.defineProperty(el,'src',{
-                  set:function(v){ if(matches(v)){ return; } if(setter) setter.call(this,v); else this.setAttribute('src',v); },
-                  get:function(){ return this.getAttribute('src'); },
-                  configurable:true
-                });
+              if(t === 'IFRAME' || t === 'SCRIPT'){
+                const src = node.src || (node.getAttribute && node.getAttribute('src')) || '';
+                if(matchesUrl(src)) return true;
+              }
+              // если внутри добавленного контейнера есть iframe/script с src-паттерном
+              if(node.querySelector){
+                const inner = node.querySelector('iframe[src], script[src]');
+                if(inner){
+                  const src = inner.src || (inner.getAttribute && inner.getAttribute('src')) || '';
+                  if(matchesUrl(src)) return true;
+                }
+              }
+              // id/class/data-qa индикаторы
+              const id = node.id || '';
+              const cls = node.className || '';
+              const dataqa = node.getAttribute && node.getAttribute('data-qa') || '';
+              if(matchesIndicator(id) || matchesIndicator(cls) || matchesIndicator(dataqa)){
+                // дополнительная проверка: если внутри есть iframe/script — вероятнее всего это карта
+                try{ if(node.querySelector && node.querySelector('iframe, script')) return true; }catch(e){}
               }
             }catch(e){}
-            return el;
-          };
-  
+            return false;
+          }
+
+          // удалить уже добавленные потенциальные карты
           try{
-            const origFetch = window.fetch;
-            window.fetch = function(input, init){
-              let url = (typeof input==='string')? input : (input && input.url);
-              if(matches(url)) return new Promise(()=>{});
-              return origFetch.apply(this, arguments);
-            };
+            const candidates = document.querySelectorAll('iframe, script, div');
+            candidates.forEach(n=>{ try{ if(isMapNode(n)) n.remove(); }catch(e){} });
           }catch(e){}
-  
+
+          // наблюдатель за добавленными узлами
           try{
-            const origOpen = XMLHttpRequest.prototype.open;
-            XMLHttpRequest.prototype.open = function(method, url){
-              if(matches(url)){ try{ this.abort(); }catch(e){}; return; }
-              return origOpen.apply(this, arguments);
-            };
+            const mo = new MutationObserver(function(muts){
+              for(const m of muts){
+                for(const n of m.addedNodes){
+                  try{
+                    if(isMapNode(n)){
+                      n.remove();
+                      continue;
+                    }
+                    // если добавленный узел контейнер — посмотрим внутри
+                    if(n.querySelector){
+                      const inner = n.querySelectorAll && n.querySelectorAll('iframe, script');
+                      if(inner && inner.length){
+                        inner.forEach(el=>{ if(isMapNode(el)) try{ el.remove(); }catch(e){} });
+                      }
+                    }
+                  }catch(e){}
+                }
+              }
+            });
+            mo.observe(document.documentElement || document, { childList: true, subtree: true });
           }catch(e){}
-  
-          setTimeout(()=>{
-            try{
-              document.querySelectorAll('iframe[src*="maps"], iframe[src*="map"], script[src*="maps"], script[src*="map"], div[class*="map"], .map, [id*="map"], [data-qa*="map"]').forEach(el=>el.remove());
-            }catch(e){}
-          }, 50);
         })();
         """
         try:
