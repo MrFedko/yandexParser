@@ -45,6 +45,14 @@ class BrowserManager:
         # 2 = block images
         op.set_preference("permissions.default.image", 2)
 
+        # Установим русские предпочтения локали — это влияет на Accept-Language и поведение страниц
+        try:
+            op.set_preference("intl.accept_languages", "ru-RU,ru")
+            op.set_preference("intl.locale.requested", "ru-RU")
+            op.set_preference("general.useragent.locale", "ru-RU")
+        except Exception:
+            pass
+
         # создаём Firefox драйвер
         self.browser = webdriver.Firefox(service=ser, options=op)
         self.browser.implicitly_wait(10)
