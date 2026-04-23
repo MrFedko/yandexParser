@@ -37,14 +37,6 @@ class BrowserManager:
         # стратегия загрузки страниц
         try:
             op.page_load_strategy = 'eager'
-            op.set_preference('gfx.downloadable_fonts.enabled', False)
-            # отключаем speculative preconnect/prefetch
-            op.set_preference('network.prefetch-next', False)
-            op.set_preference('network.http.speculative-parallel-limit', 0)
-            # кеш диска можно отключить для детерминированности (опционально)
-            op.set_preference('browser.cache.disk.enable', False)
-            # отключаем медиа автозапуск
-            op.set_preference('media.autoplay.default', 1)
         except Exception:
             # некоторые версии selenium могут не поддерживать установку — безопасно игнорируем
             pass
