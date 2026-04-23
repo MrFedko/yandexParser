@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from data.dataclasses import Review
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, InvalidSessionIdException, WebDriverException
 
 
 class BrowserManager:
@@ -239,8 +239,63 @@ class BrowserManager:
 
         all_reviews = []
 
+        def _recreate_browser_and_queue():
+            # Собираем все рестораны, которые еще не были обработаны
+            remaining = []
+            if getattr(self, 'tab_map', None):
+                remaining.extend(list(self.tab_map.values()))
+            if getattr(self, '_queue', None):
+                remaining.extend(self._queue)
+            # Очистим старые данные
+            self.tab_map = {}
+            self._queue = []
+            # Если есть что обрабатывать — создадим новую сессию и поставим в очередь
+            if remaining:
+                attempts = 2
+                for attempt in range(1, attempts + 1):
+                    try:
+                        # Закроем старый браузер если он есть
+                        try:
+                            if self.browser:
+                                try:
+                                    self.browser.quit()
+                                except Exception:
+                                    pass
+                        finally:
+                            # явно обнулим, чтобы не держать сломанный объект
+                            self.browser = None
+
+                        # Откроем новую сессию и поставим очередь (max_tabs оставляем 1 по умолчанию)
+                        self.open_multiple_tabs(remaining, max_tabs=1)
+                        print("Recreated browser session and re-queued remaining restaurants.")
+                        return True
+                    except Exception as e:
+                        print(f"Attempt {attempt} failed to recreate browser session:", e)
+                        sleep(0.5)
+                        continue
+                return False
+            return False
+
         # пока есть открытые вкладки
         while getattr(self, 'tab_map', None) and len(self.tab_map) > 0:
+            # Проверим валидность сессии (иногда selenium теряет session_id)
+            try:
+                # если браузер не инициализирован — считаем сессию потерянной
+                if not self.browser or not getattr(self.browser, 'session_id', None):
+                    raise InvalidSessionIdException('no session')
+                # выполняем лёгкий скрипт, он бросит при потерянной/неустановленной сессии
+                try:
+                    self.browser.execute_script('return 1')
+                except Exception:
+                    raise
+            except (InvalidSessionIdException, WebDriverException) as e:
+                print("Browser session invalid — attempting to recreate and continue queue...", e)
+                if not _recreate_browser_and_queue():
+                    break
+                else:
+                    # пересоздали — начнём итерацию заново
+                    continue
+
             # snapshot списка handles — обрабатываем в порядке появления
             handles = list(self.tab_map.keys())
 
@@ -254,6 +309,18 @@ class BrowserManager:
                     self.browser.switch_to.window(handle)
                 except Exception:
                     # если переключение не удалось — попробуем переключиться на любой существующий
+                    try:
+                        if not getattr(self.browser, 'session_id', None):
+                            raise InvalidSessionIdException('session lost')
+                    except (InvalidSessionIdException, WebDriverException):
+                        print("Detected lost browser session while switching window")
+                        # пересоздаём браузер и очередь
+                        if _recreate_browser_and_queue():
+                            # перейдём к следующей итерации внешнего while
+                            break
+                        else:
+                            return all_reviews
+
                     if self.browser.window_handles:
                         self.browser.switch_to.window(self.browser.window_handles[-1])
                     else:
@@ -335,6 +402,25 @@ class BrowserManager:
                                 text=text,
                                 sent_to_telegram=False
                             ))
+
+                except InvalidSessionIdException:
+                    print("InvalidSessionIdException caught during parsing — recreating browser and re-queueing remaining restaurants")
+                    if _recreate_browser_and_queue():
+                        break
+                    else:
+                        return all_reviews
+                except WebDriverException as e:
+                    print("WebDriverException during parsing:", e)
+                    # при потере сессии/ошибках драйвера — попробуем пересоздать браузер и продолжить
+                    try:
+                        if _recreate_browser_and_queue():
+                            # перезапустили — перейдём к следующей итерации внешнего while
+                            break
+                        else:
+                            return all_reviews
+                    except Exception as e2:
+                        print("Failed to recover from WebDriverException:", e2)
+                        return all_reviews
 
                 except Exception as e:
                     print(f"Error in {rest.rest_name}: {e}")
