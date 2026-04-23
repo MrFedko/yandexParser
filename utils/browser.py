@@ -15,7 +15,6 @@ from data.dataclasses import Review
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 
 
-
 class BrowserManager:
     def __init__(self, path: str):
         self.path = path
@@ -29,11 +28,11 @@ class BrowserManager:
         op = Options()
 
         # headless режим
-        try:
-            # prefer explicit headless flag
-            op.add_argument('-headless')
-        except Exception:
-            op.headless = True
+        # try:
+        #     # prefer explicit headless flag
+        #     op.add_argument('-headless')
+        # except Exception:
+        #     op.headless = True
 
         # стратегия загрузки страниц
         try:
@@ -60,6 +59,84 @@ class BrowserManager:
         )
 
         sleep(1)  # короткая стабилизация UI
+
+    def _inject_map_blocker(self):
+        """Инъекция JS, блокирующего загрузку карты/плагина и удаляющего существующие элементы карты."""
+        js = r"""
+        (function(){
+          const patterns = ['yandex.ru/maps','api-maps.yandex.ru','static-maps.yandex','maps.yandex','mapbox.com','openstreetmap.org','maps.gstatic.com'];
+          function matches(u){ if(!u) return false; try{ return patterns.some(p=>u.indexOf(p)!==-1); }catch(e){return false;} }
+
+          // блокировка добавления скриптов/iframe через appendChild/insertBefore
+          ['appendChild','insertBefore'].forEach(fn=>{
+            const orig = Node.prototype[fn];
+            Node.prototype[fn] = function(node, ref){
+              try{
+                if(node && node.tagName === 'SCRIPT'){
+                  let src = node.src || (node.getAttribute && node.getAttribute('src')) || '';
+                  if(matches(src) || (node.innerHTML && node.innerHTML.indexOf('maps')!==-1)){
+                    return node; // не добавляем
+                  }
+                }
+                if(node && node.tagName === 'IFRAME'){
+                  let src = node.src || (node.getAttribute && node.getAttribute('src')) || '';
+                  if(matches(src)){
+                    return node;
+                  }
+                }
+              }catch(e){}
+              return orig.call(this, node, ref);
+            };
+          });
+
+          // перехват создания элементов, чтобы блокировать присваивание src
+          const origCreate = Document.prototype.createElement;
+          Document.prototype.createElement = function(tag){
+            const el = origCreate.call(this, tag);
+            try{
+              if(tag.toLowerCase()==='script' || tag.toLowerCase()==='iframe'){
+                const desc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'src');
+                const setter = desc && desc.set;
+                Object.defineProperty(el,'src',{
+                  set:function(v){ if(matches(v)){ return; } if(setter) setter.call(this,v); else this.setAttribute('src',v); },
+                  get:function(){ return this.getAttribute('src'); },
+                  configurable:true
+                });
+              }
+            }catch(e){}
+            return el;
+          };
+
+          // блокировать fetch/xhr к ресурсам карт
+          try{
+            const origFetch = window.fetch;
+            window.fetch = function(input, init){
+              let url = (typeof input==='string')? input : (input && input.url);
+              if(matches(url)) return new Promise(()=>{});
+              return origFetch.apply(this, arguments);
+            };
+          }catch(e){}
+
+          try{
+            const origOpen = XMLHttpRequest.prototype.open;
+            XMLHttpRequest.prototype.open = function(method, url){
+              if(matches(url)){ try{ this.abort(); }catch(e){}; return; }
+              return origOpen.apply(this, arguments);
+            };
+          }catch(e){}
+
+          // удалить уже существующие элементы карты
+          setTimeout(()=>{
+            try{
+              document.querySelectorAll('iframe[src*="maps"], iframe[src*="map"], script[src*="maps"], script[src*="map"], div[class*="map"], .map, [id*="map"], [data-qa*="map"]').forEach(el=>el.remove());
+            }catch(e){}
+          }, 50);
+        })();
+        """
+        try:
+            self.browser.execute_script(js)
+        except Exception as e:
+            print("Map blocker injection failed:", e)
 
     # ---------------- SORT ----------------
 
@@ -179,6 +256,11 @@ class BrowserManager:
 
         # первая вкладка
         self.browser.get(restaurants[0].link)
+        # попытка заблокировать загрузку карт на странице сразу после навигации
+        try:
+            self._inject_map_blocker()
+        except Exception:
+            pass
         self._wait_dom()
 
         self.tab_map[self.browser.current_window_handle] = restaurants[0]
@@ -190,6 +272,12 @@ class BrowserManager:
             # переключаемся на новую вкладку (последнюю)
             new_handle = self.browser.window_handles[-1]
             self.browser.switch_to.window(new_handle)
+
+            # снова инъектим блокировщик в каждую новую вкладку
+            try:
+                self._inject_map_blocker()
+            except Exception:
+                pass
 
             self._wait_dom()
 
