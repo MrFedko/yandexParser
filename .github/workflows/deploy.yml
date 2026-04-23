@@ -22,6 +22,6 @@ jobs:
             # Переходим в директорию проекта
             cd /home/parser/yandexParser/
                   git pull
-                  sudo systemctl stop parser
-                  sudo systemctl enable parser
-                  sudo systemctl start parser
+                  sudo systemctl stop educationbot
+                  sudo systemctl enable educationbot
+                  sudo systemctl start educationbot
