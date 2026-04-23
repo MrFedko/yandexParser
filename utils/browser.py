@@ -4,115 +4,467 @@ from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver import ActionChains
 from bs4 import BeautifulSoup
 from time import sleep
+import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from data.dataclasses import Review
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, InvalidSessionIdException, WebDriverException
 
 
 class BrowserManager:
-    def __init__(self, driver_path):
-        self.driver_path = driver_path
+    def __init__(self, path: str):
+        self.tab_map = None
+        self.path = path
         self.browser = None
+        # очередь на открытие (поддержка open_multiple_tabs)
+        self._queue = []
 
-    def init_browser(self):
-        service = Service(self.driver_path)
-        options = Options()
+    # ---------------- INIT ----------------
 
-        options.add_argument("-headless")
+    def _init_browser(self):
+        ser = Service(self.path)
+        # используем Firefox (geckodriver)
+        op = Options()
 
-        # стабильность
-        options.set_preference("intl.accept_languages", "ru-RU,ru")
-        options.set_preference("permissions.default.image", 2)
+        # headless режим
+        try:
+            # prefer explicit headless flag
+            op.add_argument('-headless')
+        except Exception:
+            op.headless = True
 
-        self.browser = webdriver.Firefox(service=service, options=options)
+        # стратегия загрузки страниц
+        try:
+            op.page_load_strategy = 'eager'
+            op.set_preference('gfx.downloadable_fonts.enabled', False)
+            # отключаем speculative preconnect/prefetch
+            op.set_preference('network.prefetch-next', False)
+            op.set_preference('network.http.speculative-parallel-limit', 0)
+            # кеш диска можно отключить для детерминированности (опционально)
+            op.set_preference('browser.cache.disk.enable', False)
+            # отключаем медиа автозапуск
+            op.set_preference('media.autoplay.default', 1)
+        except Exception:
+            # некоторые версии selenium могут не поддерживать установку — безопасно игнорируем
+            pass
+
+
+        # Установим русские предпочтения локали — это влияет на Accept-Language и поведение страниц
+        try:
+            op.set_preference("intl.accept_languages", "ru-RU,ru")
+            op.set_preference("intl.locale.requested", "ru-RU")
+            op.set_preference("general.useragent.locale", "ru-RU")
+        except Exception:
+            pass
+
+        # ускорение: отключаем загрузку картинок
+        # 2 = block images
+        op.set_preference("permissions.default.image", 2)
+
+        # создаём Firefox драйвер
+        self.browser = webdriver.Firefox(service=ser, options=op)
         self.browser.implicitly_wait(10)
 
-    def wait_page(self):
+    def _wait_dom(self):
         WebDriverWait(self.browser, 15).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
-        sleep(2)
 
-    def select_newest(self):
+        WebDriverWait(self.browser, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "rating-ranking-view"))
+        )
+
+        sleep(1)  # короткая стабилизация UI
+
+    # ---------------- SORT ----------------
+
+    def wait_clickable_js(self, element):
+        WebDriverWait(self.browser, 15).until(
+            lambda d: d.execute_script("""
+                const el = arguments[0];
+                const rect = el.getBoundingClientRect();
+                const elem = document.elementFromPoint(
+                    rect.x + rect.width/2,
+                    rect.y + rect.height/2
+                );
+                return el === elem || el.contains(elem);
+            """, element)
+        )
+
+    def open_sort_menu(self):
+        btn = WebDriverWait(self.browser, 15).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "rating-ranking-view"))
+        )
+
+        # скроллим
+        self.browser.execute_script(
+            "arguments[0].scrollIntoView({block: 'center'});", btn
+        )
+
+        # 🔥 ждём реальной кликабельности (а не просто Selenium)
         try:
+            self.wait_clickable_js(btn)
+        except StaleElementReferenceException:
+            # элемент мог стать stale — попытка пере-локализации
             btn = WebDriverWait(self.browser, 10).until(
                 EC.presence_of_element_located((By.CLASS_NAME, "rating-ranking-view"))
             )
-
-            self.browser.execute_script("arguments[0].click();", btn)
-
-            newest = WebDriverWait(self.browser, 10).until(
-                EC.element_to_be_clickable((
-                    By.CSS_SELECTOR,
-                    "div.rating-ranking-view__popup-line[aria-label='По новизне']"
-                ))
+            self.browser.execute_script(
+                "arguments[0].scrollIntoView({block: 'center'});", btn
             )
 
-            self.browser.execute_script("arguments[0].click();", newest)
-            sleep(2)
+        # используем безопасный клик: сначала ActionChains, иначе JS click
+        try:
+            ActionChains(self.browser) \
+                .move_to_element(btn) \
+                .pause(0.2) \
+                .click() \
+                .perform()
+        except Exception:
+            try:
+                self.browser.execute_script("arguments[0].click();", btn)
+            except Exception as e:
+                raise
 
-            print("✅ Сортировка по новизне")
-        except Exception as e:
-            print("⚠️ Не удалось выбрать сортировку:", e)
-
-    def parse_page(self, url):
-        self.browser.get(url)
-        self.wait_page()
-
-        self.select_newest()
-
-        html = self.browser.page_source
-        soup = BeautifulSoup(html, "html.parser")
-
-        reviews = soup.find_all(
-            "div", {"class": "business-reviews-card-view__review"}
+        # ждём открытия меню
+        WebDriverWait(self.browser, 10).until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, ".rating-ranking-view__popup-line")
+            )
         )
 
-        result = []
+    def select_newest(self):
+        # открываем меню сортировки
+        self.open_sort_menu()
 
-        for r in reviews:
+        selector = "div.rating-ranking-view__popup-line[aria-label='По новизне']"
+
+        # пытаемся надёжно кликнуть по пункту 'По новизне' с повторными попытками
+        attempts = 4
+        for attempt in range(1, attempts + 1):
             try:
-                author = r.find(itemprop="author")
-                name = author.find(itemprop="name").text if author else None
+                newest = WebDriverWait(self.browser, 10).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                )
 
-                rating = r.find(itemprop="ratingValue")
-                rating = rating["content"] if rating else None
+                # скроллим к нему
+                self.browser.execute_script(
+                    "arguments[0].scrollIntoView({block: 'center'});", newest
+                )
 
-                date = r.find(itemprop="datePublished")
-                if date:
-                    dt = datetime.fromisoformat(date["content"].replace("Z", "+00:00"))
-                    dt = dt.astimezone(ZoneInfo("Europe/Moscow"))
-                    date = dt.strftime("%Y-%m-%d %H:%M:%S")
+                # сначала пробуем нормальный клик через ActionChains
+                try:
+                    ActionChains(self.browser) \
+                        .move_to_element(newest) \
+                        .pause(0.2) \
+                        .click() \
+                        .perform()
+                except Exception:
+                    # fallback: JS click (устойчивее к overlay / быстрым изменениям DOM)
+                    self.browser.execute_script("arguments[0].click();", newest)
 
-                text = r.find(itemprop="reviewBody")
-                text = text.text.strip() if text else None
+                # подтверждаем, что отзывы загрузились
+                WebDriverWait(self.browser, 10).until(
+                    lambda d: len(
+                        d.find_elements(By.CLASS_NAME, "business-reviews-card-view__review")
+                    ) > 0
+                )
 
-                result.append({
-                    "author": name,
-                    "rating": rating,
-                    "date": date,
-                    "text": text
-                })
+                print("✅ По новизне выбрано")
+                return
 
-            except Exception as e:
-                print("Ошибка парсинга:", e)
+            except StaleElementReferenceException:
+                print(f"Stale element when selecting newest, retry {attempt}/{attempts}")
+                sleep(0.5)
+                continue
+            except TimeoutException:
+                print(f"Timeout when locating 'По новизне', retry {attempt}/{attempts}")
+                sleep(0.5)
+                continue
 
-        return result
+        # если не удалось
+        raise Exception("Failed to select newest after retries")
 
-    def run(self, restaurants):
-        self.init_browser()
+    # ---------------- TABS ----------------
+
+    def open_multiple_tabs(self, restaurants, max_tabs: int = 1):
+        """Открывает до `max_tabs` вкладок сразу (по умолчанию 1). Остальные рестораны сохраняются в очередь `self._queue`.
+        После вызова этой функции вызовите parse_all_tabs() чтобы последовательно обработать очередь.
+
+        Параметры:
+            restaurants: список объектов (SimpleNamespace / dataclass) с полем .link
+            max_tabs: максимальное число одновременно открытых вкладок (по умолчанию 1)
+        """
+
+        self._init_browser()
+
+        self.tab_map = {}
+        # reset очередь и заполним её остатком
+        if not restaurants:
+            return
+
+        # guard: положим копию списка
+        rest_list = list(restaurants)
+        # первые N для открытия
+        to_open = rest_list[:max_tabs]
+        self._queue = rest_list[max_tabs:]
+
+        # открываем первую (и далее — до max_tabs)
+        first = to_open[0]
+        self.browser.get(first.link)
+        self._wait_dom()
+        self.tab_map[self.browser.current_window_handle] = first
+
+        # открываем остальные из to_open
+        for restaurant in to_open[1:]:
+            self.browser.execute_script("window.open(arguments[0]);", restaurant.link)
+            new_handle = self.browser.window_handles[-1]
+            self.browser.switch_to.window(new_handle)
+            self._wait_dom()
+            self.tab_map[new_handle] = restaurant
+
+    # ---------------- PARSE ----------------
+    def parse_all_tabs(self, restaurants=None):
+        """Динамически обрабатывает открытые вкладки.
+        После парсинга вкладка закрывается и при наличии очереди открывается следующая.
+        Возвращает список всех найденных отзывов.
+        Если `open_multiple_tabs` не вызывался, можно передать список restaurants — тогда он будет использован.
+        """
+        # если пользователь передал restaurants, и open_multiple_tabs не вызывали — инициализируем
+        if restaurants and not getattr(self, 'tab_map', None):
+            self.open_multiple_tabs(restaurants)
 
         all_reviews = []
 
-        for r in restaurants:
-            print(f"Processing: {r['name']}")
+        def _recreate_browser_and_queue():
+            # Собираем все рестораны, которые еще не были обработаны
+            remaining = []
+            if getattr(self, 'tab_map', None):
+                remaining.extend(list(self.tab_map.values()))
+            if getattr(self, '_queue', None):
+                remaining.extend(self._queue)
+            # Очистим старые данные
+            self.tab_map = {}
+            self._queue = []
+            # Если есть что обрабатывать — создадим новую сессию и поставим в очередь
+            if remaining:
+                attempts = 2
+                for attempt in range(1, attempts + 1):
+                    try:
+                        # Закроем старый браузер если он есть
+                        try:
+                            if self.browser:
+                                try:
+                                    self.browser.quit()
+                                except Exception:
+                                    pass
+                        finally:
+                            # явно обнулим, чтобы не держать сломанный объект
+                            self.browser = None
 
+                        # Откроем новую сессию и поставим очередь (max_tabs оставляем 1 по умолчанию)
+                        self.open_multiple_tabs(remaining, max_tabs=1)
+                        print("Recreated browser session and re-queued remaining restaurants.")
+                        return True
+                    except Exception as e:
+                        print(f"Attempt {attempt} failed to recreate browser session:", e)
+                        sleep(0.5)
+                        continue
+                return False
+            return False
+
+        # пока есть открытые вкладки
+        while getattr(self, 'tab_map', None) and len(self.tab_map) > 0:
+            # Проверим валидность сессии (иногда selenium теряет session_id)
             try:
-                data = self.parse_page(r["link"])
-                all_reviews.extend(data)
-            except Exception as e:
-                print("Ошибка:", e)
+                # если браузер не инициализирован — считаем сессию потерянной
+                if not self.browser or not getattr(self.browser, 'session_id', None):
+                    raise InvalidSessionIdException('no session')
+                # выполняем лёгкий скрипт, он бросит при потерянной/неустановленной сессии
+                try:
+                    self.browser.execute_script('return 1')
+                except Exception:
+                    raise
+            except (InvalidSessionIdException, WebDriverException) as e:
+                print("Browser session invalid — attempting to recreate and continue queue...", e)
+                if not _recreate_browser_and_queue():
+                    break
+                else:
+                    # пересоздали — начнём итерацию заново
+                    continue
 
-        self.browser.quit()
+            # snapshot списка handles — обрабатываем в порядке появления
+            handles = list(self.tab_map.keys())
+
+            for handle in handles:
+                # если таб был закрыт в промежутке — пропускаем
+                if handle not in self.tab_map:
+                    continue
+
+                rest = self.tab_map[handle]
+                try:
+                    self.browser.switch_to.window(handle)
+                except Exception:
+                    # если переключение не удалось — попробуем переключиться на любой существующий
+                    try:
+                        if not getattr(self.browser, 'session_id', None):
+                            raise InvalidSessionIdException('session lost')
+                    except (InvalidSessionIdException, WebDriverException):
+                        print("Detected lost browser session while switching window")
+                        # пересоздаём браузер и очередь
+                        if _recreate_browser_and_queue():
+                            # перейдём к следующей итерации внешнего while
+                            break
+                        else:
+                            return all_reviews
+
+                    if self.browser.window_handles:
+                        self.browser.switch_to.window(self.browser.window_handles[-1])
+                    else:
+                        break
+
+                print(f"Processing: {rest.rest_name}")
+
+                try:
+                    # попытка применить сортировку
+                    sorted_ok = False
+                    for _ in range(3):
+                        try:
+                            self.select_newest()
+                            sorted_ok = True
+                            break
+                        except Exception as e:
+                            print("retry sort:", str(e).split("\n")[0])
+                            sleep(1)
+
+                    if not sorted_ok:
+                        print("⚠️ sort not applied, parsing as-is")
+
+                    # ждём стабилизацию DOM
+                    old_source = self.browser.page_source
+                    try:
+                        WebDriverWait(self.browser, 10).until(
+                            lambda d: d.page_source != old_source
+                        )
+                    except Exception:
+                        pass
+
+                    sleep(1)
+
+                    # парсим текущую вкладку (извлечение HTML отзывов — как раньше)
+                    reviews_elems = self.browser.find_elements(
+                        By.CLASS_NAME,
+                        "business-reviews-card-view__review"
+                    )
+                    html = "".join([r.get_attribute("outerHTML") for r in reviews_elems])
+                    soup = BeautifulSoup(html, "html.parser")
+
+                    reviews = soup.find_all(
+                        "div",
+                        {"class": "business-reviews-card-view__review"}
+                    )
+
+                    for review in reviews:
+                        author_tag = review.find(itemprop="author")
+                        name_tag = author_tag.find(itemprop="name") if author_tag else None
+                        link_tag = author_tag.find("a") if author_tag else None
+
+                        author_name = name_tag.get_text(strip=True) if name_tag else None
+                        author_url = link_tag["href"] if link_tag else None
+
+                        rating_tag = review.find(itemprop="ratingValue")
+                        rating = rating_tag["content"] if rating_tag else None
+
+                        date_tag = review.find(itemprop="datePublished")
+                        date = date_tag["content"] if date_tag else None
+                        dt = datetime.fromisoformat(date.replace("Z", "+00:00"))
+
+                        dt_msk = dt.astimezone(ZoneInfo("Europe/Moscow"))
+                        date = dt_msk.strftime("%Y-%m-%d %H:%M:%S")
+
+                        text_tag = review.find(itemprop="reviewBody")
+                        text = None
+                        if text_tag:
+                            inner = text_tag.find("span", class_="spoiler-view__text-container")
+                            text = inner.get_text(strip=True) if inner else text_tag.get_text(strip=True)
+
+                        all_reviews.append(
+                            Review(
+                                rest_id=rest.id,
+                                review_id=str(uuid.uuid4()),
+                                date_time=date,
+                                author_name=author_name,
+                                author_url=author_url,
+                                rating=rating,
+                                text=text,
+                                sent_to_telegram=False
+                            ))
+
+                except InvalidSessionIdException:
+                    print("InvalidSessionIdException caught during parsing — recreating browser and re-queueing remaining restaurants")
+                    if _recreate_browser_and_queue():
+                        break
+                    else:
+                        return all_reviews
+                except WebDriverException as e:
+                    print("WebDriverException during parsing:", e)
+                    # при потере сессии/ошибках драйвера — попробуем пересоздать браузер и продолжить
+                    try:
+                        if _recreate_browser_and_queue():
+                            # перезапустили — перейдём к следующей итерации внешнего while
+                            break
+                        else:
+                            return all_reviews
+                    except Exception as e2:
+                        print("Failed to recover from WebDriverException:", e2)
+                        return all_reviews
+
+                except Exception as e:
+                    print(f"Error in {rest.rest_name}: {e}")
+
+                # Закрываем обработанную вкладку
+                try:
+                    # switch to it to close
+                    try:
+                        self.browser.switch_to.window(handle)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print("Error closing tab:", e)
+
+                # Удаляем из мапы
+                try:
+                    del self.tab_map[handle]
+                except KeyError:
+                    pass
+
+                # Если в очереди есть еще рестораны — открываем следующий (чтобы было максимум 2 вкладки)
+                if self._queue:
+                    next_rest = self._queue.pop(0)
+                    self.browser.execute_script("window.open(arguments[0]);", next_rest.link)
+                    new_handle = self.browser.window_handles[-1]
+                    # переключаемся и применяем блокировщик/локаль
+                    try:
+                        self.browser.switch_to.window(new_handle)
+                        self._wait_dom()
+                    except Exception as e:
+                        print("Error opening next tab:", e)
+                    self.tab_map[new_handle] = next_rest
+
+                # после закрытия и возможного открытия следующего — переключимся на существующую вкладку, если есть
+                if self.browser.window_handles:
+                    try:
+                        self.browser.switch_to.window(self.browser.window_handles[-1])
+                    except Exception:
+                        pass
+
         return all_reviews
+
+    # ---------------- CLOSE ----------------
+
+    def close(self):
+        if self.browser:
+            self.browser.quit()
